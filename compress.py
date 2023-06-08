@@ -9,41 +9,53 @@ from openpyxl.styles import Border, Side
 from openpyxl.styles import Alignment
 
 
-def Write_csv(csv_file, data):
-    csvfile = open(csv_file, "a", newline="")
-    writer = csv.writer(csvfile)
-    writer.writerow(data)
-
-
 def setWidth(sheet):
-    column_letter = "B"
-    column_width = 6
-    sheet.column_dimensions[column_letter].width = column_width
-    column_letter = "C"
-    column_width = 33
-    sheet.column_dimensions[column_letter].width = column_width
-    column_letter = "D"
-    column_width = 12.29
+    """
+    Function to set width of columns of Excel
 
-    sheet.column_dimensions[column_letter].width = column_width
-    column_letter = "E"
-    column_width = 16.43
-    sheet.column_dimensions[column_letter].width = column_width
-    column_letter = "F"
-    column_width = 11
-    sheet.column_dimensions[column_letter].width = column_width
-    column_letter = "G"
-    column_width = 12.29
-    sheet.column_dimensions[column_letter].width = column_width
+    Inputs:
+    - None
 
+    Outputs:
+    - None
+    """
 
-def setPathRows(start_row, start_column, end_row, end_column, sheet, value, color):
+    # Dictionary for column width
+    col_width = {"B":6,"C":33,"D":12.29,"E":16.43,"F":11,"G":12.29}
+
+    # Iterating dictionary for setting column width
+    for column_letter, column_width in col_width.items():
+        sheet.column_dimensions[column_letter].width = column_width
+
+def excelMergeCells(start_row, start_column, end_row, end_column, sheet, value, color):
+    """
+    Function to do following task
+    - Merge cells and set content and color of merged cell and center align text
+
+    Inputs:
+    - start_row
+    - start_column
+    - end_row
+    - end_column
+    - sheet
+    - value
+    - color
+
+    Outputs:
+    - None
+    """
+
+    ## Merging cell
     merge_range = f"{sheet.cell(row=start_row, column=start_column).coordinate}:{sheet.cell(row=end_row, column=end_column).coordinate}"
     sheet.merge_cells(merge_range)
-    alignment = Alignment(horizontal="center", vertical="center")
+
+    # Setting content of merge cells and Center align text
     cell = sheet.cell(row=start_row, column=start_column)
+    alignment = Alignment(horizontal="center", vertical="center")
     cell.value = value
     cell.alignment = alignment
+
+    # Setting border and color details
     fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
     border = Border(
         left=Side(border_style="medium", color="000000"),
@@ -51,30 +63,47 @@ def setPathRows(start_row, start_column, end_row, end_column, sheet, value, colo
         top=Side(border_style="medium", color="000000"),
         bottom=Side(border_style="medium", color="000000"),
     )
-    for row in sheet.iter_rows(
-        min_row=start_row, max_row=end_row, min_col=start_column, max_col=end_column
-    ):
+
+    # Setting border and color of cells
+    for row in sheet.iter_rows(min_row=start_row, max_row=end_row, min_col=start_column, max_col=end_column):
         for cell in row:
             cell.fill = fill
             cell.border = border
 
+def fileSizeCalculate(original_folder_path, compressed_folder_path, image_file):
+    """
+    Function for determining size of original and compressed, the difference between the original and compressed image sizes, as well as the percentage of compression.
+    
+    Inputs:
+    - original_folder_path : Original folder path
+    - compressed_folder_path : Compressed folder path
+    - image_file : Image Name
 
-def show_file_size(original_folder_path, compressed_folder_path, image_file):
+    Outputs:
+    - image_file : Image Name
+    - original_image_size_mb : Original image file size in MB
+    - compressed_image_size_mb : Compressed image file size in MB
+    - diff_size_mb : difference between the original and compressed image sizes in MB
+    - diff_percentage : percentage of compression
+    """
+
+    # Calculating size of Original Image and converting in MB
     original_image_path = os.path.join(original_folder_path, image_file)
-    compressed_image_path = os.path.join(compressed_folder_path, image_file)
     original_image_size = os.path.getsize(original_image_path)
-    compressed_image_size = os.path.getsize(compressed_image_path)
     original_image_size_mb = round(original_image_size / (1024 * 1024), 2)
+
+    # Calculating size of Compressed Image and converting in MB
+    compressed_image_path = os.path.join(compressed_folder_path, image_file)
+    compressed_image_size = os.path.getsize(compressed_image_path)
     compressed_image_size_mb = round(compressed_image_size / (1024 * 1024), 2)
+
+    # Calculating the difference between the original and compressed image sizes
     diff_size_mb = round((original_image_size_mb - compressed_image_size_mb), 2)
+
+    # Calculating percentage of compression
     diff_percentage = round((diff_size_mb * 100) / original_image_size_mb, 2)
-    return [
-        image_file,
-        original_image_size_mb,
-        compressed_image_size_mb,
-        diff_size_mb,
-        diff_percentage,
-    ]
+
+    return [image_file,original_image_size_mb,compressed_image_size_mb,diff_size_mb,diff_percentage]
 
 
 app = QApplication(sys.argv)
@@ -141,7 +170,7 @@ class Filecompressr(QtWidgets.QWidget):
                     sheet = workbook.active
                     setWidth(sheet)
                     csv_file = os.path.join(compressed_folder_path, filename)
-                    setPathRows(
+                    excelMergeCells(
                         3,
                         2,
                         4,
@@ -150,7 +179,7 @@ class Filecompressr(QtWidgets.QWidget):
                         "Source Path : " + original_folder_path,
                         "76933C",
                     )
-                    setPathRows(
+                    excelMergeCells(
                         6,
                         2,
                         7,
@@ -207,7 +236,7 @@ class Filecompressr(QtWidgets.QWidget):
                             image,
                             [cv2.IMWRITE_JPEG_QUALITY, compression],
                         )
-                        data = show_file_size(
+                        data = fileSizeCalculate(
                             original_folder_path, compressed_folder_path, image_file
                         )
                         final_data = [
