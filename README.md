@@ -1,2 +1,2 @@
 # Image-Compressor
-Python tool Compress images of a folder
+Python tool to Compress images of a folder
