@@ -6,7 +6,7 @@ import openpyxl
 from PyQt5 import QtWidgets, QtGui
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from openpyxl.styles import PatternFill, Border, Side, Alignment
-import subprocess  # for opening Excel file automatically
+import subprocess  # for opening Excel automatically
 
 # ------------------------ Helper / Excel Utilities ------------------------ #
 
@@ -62,6 +62,17 @@ def get_file_stats(original_folder, compressed_folder, filename):
 # ---------------------------- Worker Thread ---------------------------- #
 
 class CompressorWorker(QThread):
+    """
+    QThread worker that compresses images/videos and generates Excel report.
+
+    Signals:
+    ---------
+    progress(int) -> percent complete [0..100]
+    log(str) -> log messages to GUI
+    finished(str) -> path to Excel report
+    error(str) -> error message
+    """
+
     progress = pyqtSignal(int)
     log = pyqtSignal(str)
     finished = pyqtSignal(str)
@@ -74,6 +85,7 @@ class CompressorWorker(QThread):
         self._is_interrupted = False
 
     def interrupt(self):
+        """Request cancellation; checked between files."""
         self._is_interrupted = True
 
     def _compress_image(self, src_path, dest_path):
@@ -112,7 +124,7 @@ class CompressorWorker(QThread):
             cap.release()
             raise RuntimeError("Unable to open VideoWriter")
 
-        for f_idx in range(frame_count):
+        for _ in range(frame_count):
             if self._is_interrupted:
                 writer.release()
                 cap.release()
@@ -131,12 +143,11 @@ class CompressorWorker(QThread):
             if os.path.abspath(dest_mp4) != os.path.abspath(dest_path):
                 try:
                     shutil.move(dest_mp4, dest_path)
-                    final_path = dest_path
+                    return dest_path
                 except Exception:
-                    final_path = dest_mp4
+                    return dest_mp4
             else:
-                final_path = dest_mp4
-            return final_path
+                return dest_mp4
         else:
             raise RuntimeError("Video encoding produced no output file")
 
@@ -179,7 +190,7 @@ class CompressorWorker(QThread):
 
             self.log.emit(f"Found {len(files)} files. Starting compression at {self.compression_percent}%.")
 
-            for idx, fname in enumerate(files, start=1):
+            for fname in files:
                 if self._is_interrupted:
                     self.log.emit("Compression interrupted by user.")
                     break
@@ -204,8 +215,7 @@ class CompressorWorker(QThread):
                             self.log.emit(f"Image copy fallback: {fname}. Error: {e}")
                     elif lower.endswith(VIDEO_EXTS):
                         try:
-                            final_video_path = self._compress_video(src_path, dest_path)
-                            dest_path = final_video_path
+                            dest_path = self._compress_video(src_path, dest_path)
                             self.log.emit(f"Compressed video: {fname}")
                         except Exception as e:
                             try:
@@ -273,7 +283,24 @@ class CompressorWorker(QThread):
 # ------------------------------ GUI Class ------------------------------ #
 
 class FileCompressorUI(QtWidgets.QWidget):
-    """Main UI with drag-and-drop folder selection and light theme."""
+    """
+    Bulk Media Compressor GUI with drag-and-drop folder selection and light theme.
+
+    Features:
+    -------------
+    - Drag-and-drop folder selection or browse via a dialog.
+    - Input for compression percentage (10–90%) for both images and videos.
+    - Threaded compression using CompressorWorker to keep UI responsive.
+    - Progress bar showing overall compression progress.
+    - Real-time log display for file-level status (compressed, copied, skipped, errors).
+    - Cancel button to gracefully stop ongoing compression.
+    - Automatic generation of an Excel report summarizing:
+        - Original file size
+        - Compressed file size
+        - Size difference (MB and %)
+    - Opens the Excel report automatically after completion.
+    - Light-themed UI with styled input fields, buttons, and progress bar.
+    """
 
     def __init__(self):
         super().__init__()
@@ -396,7 +423,6 @@ class FileCompressorUI(QtWidgets.QWidget):
     def on_finished(self, excel_path):
         self.append_log(f"Worker finished. Excel: {excel_path}")
         QtWidgets.QMessageBox.information(self, "Done", f"Compression completed.\nExcel saved at:\n{excel_path}")
-        # Open Excel automatically
         try:
             if sys.platform.startswith('darwin'):
                 subprocess.call(['open', excel_path])
