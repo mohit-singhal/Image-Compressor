@@ -1,337 +1,429 @@
-import cv2
-import os, csv
-from PyQt5 import QtWidgets, QtGui
+import os
 import sys
-from PyQt5.QtWidgets import QApplication
-import openpyxl
-from openpyxl.styles import PatternFill
-from openpyxl.styles import Border, Side
-from openpyxl.styles import Alignment
+import cv2
 import shutil
+import openpyxl
+from PyQt5 import QtWidgets, QtGui
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from openpyxl.styles import PatternFill, Border, Side, Alignment
+import subprocess  # for opening Excel file automatically
+
+# ------------------------ Helper / Excel Utilities ------------------------ #
+
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".gif")
+VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv")
 
 
-def setWidth(sheet):
-    """
-    Function to set width of columns of Excel.
-
-    Inputs:
-    - None
-
-    Outputs:
-    - None
-    """
-
-    # Dictionary for column width
-    col_width = {"B": 6, "C": 33, "D": 12.29, "E": 16.43, "F": 11, "G": 12.29}
-
-    # Iterating dictionary for setting column width
-    for column_letter, column_width in col_width.items():
-        sheet.column_dimensions[column_letter].width = column_width
+def set_column_widths(sheet):
+    col_widths = {"B": 6, "C": 33, "D": 12.29, "E": 16.43, "F": 11, "G": 12.29}
+    for col, w in col_widths.items():
+        sheet.column_dimensions[col].width = w
 
 
-def excelMergeCells(start_row, start_column, end_row, end_column, sheet, value, color):
-    """
-    Function to do following task
-    - Merge cells and set content and color of merged cell and center align text
+def merge_and_style_cells(sheet, start_row, start_col, end_row, end_col, text, color):
+    rng = f"{sheet.cell(row=start_row, column=start_col).coordinate}:{sheet.cell(row=end_row, column=end_col).coordinate}"
+    sheet.merge_cells(rng)
+    cell = sheet.cell(row=start_row, column=start_col)
+    cell.value = text
+    cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    Inputs:
-    - start_row
-    - start_column
-    - end_row
-    - end_column
-    - sheet
-    - value
-    - color
-
-    Outputs:
-    - None
-    """
-
-    ## Merging cell
-    merge_range = f"{sheet.cell(row=start_row, column=start_column).coordinate}:{sheet.cell(row=end_row, column=end_column).coordinate}"
-    sheet.merge_cells(merge_range)
-
-    # Setting content of merge cells and Center align text
-    cell = sheet.cell(row=start_row, column=start_column)
-    alignment = Alignment(horizontal="center", vertical="center")
-    cell.value = value
-    cell.alignment = alignment
-
-    # Setting border and color details
     fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
     border = Border(
-        left=Side(border_style="medium", color="000000"),
-        right=Side(border_style="medium", color="000000"),
-        top=Side(border_style="medium", color="000000"),
-        bottom=Side(border_style="medium", color="000000"),
+        left=Side(style="medium", color="000000"),
+        right=Side(style="medium", color="000000"),
+        top=Side(style="medium", color="000000"),
+        bottom=Side(style="medium", color="000000"),
     )
 
-    # Setting border and color of cells
-    for row in sheet.iter_rows(
-        min_row=start_row, max_row=end_row, min_col=start_column, max_col=end_column
-    ):
-        for cell in row:
-            cell.fill = fill
-            cell.border = border
+    for row in sheet.iter_rows(min_row=start_row, max_row=end_row, min_col=start_col, max_col=end_col):
+        for c in row:
+            c.fill = fill
+            c.border = border
 
 
-def fileSizeCalculate(original_folder_path, compressed_folder_path, image_file):
-    """
-    Function for determining size of original and compressed, the difference between the original and compressed image sizes, as well as the percentage of compression.
+def get_file_stats(original_folder, compressed_folder, filename):
+    orig_path = os.path.join(original_folder, filename)
+    comp_path = os.path.join(compressed_folder, filename)
 
-    Inputs:
-    - original_folder_path : Original folder path
-    - compressed_folder_path : Compressed folder path
-    - image_file : Image Name
+    try:
+        orig = os.path.getsize(orig_path) / (1024 * 1024)
+    except OSError:
+        orig = 0.0
+    try:
+        comp = os.path.getsize(comp_path) / (1024 * 1024)
+    except OSError:
+        comp = 0.0
 
-    Outputs:
-    - image_file : Image Name
-    - original_image_size_mb : Original image file size in MB
-    - compressed_image_size_mb : Compressed image file size in MB
-    - diff_size_mb : difference between the original and compressed image sizes in MB
-    - diff_percentage : percentage of compression
-    """
-
-    # Calculating size of Original Image and converting in MB
-    original_image_path = os.path.join(original_folder_path, image_file)
-    original_image_size = os.path.getsize(original_image_path)
-    original_image_size_mb = round(original_image_size / (1024 * 1024), 2)
-
-    # Calculating size of Compressed Image and converting in MB
-    compressed_image_path = os.path.join(compressed_folder_path, image_file)
-    compressed_image_size = os.path.getsize(compressed_image_path)
-    compressed_image_size_mb = round(compressed_image_size / (1024 * 1024), 2)
-
-    # Calculating the difference between the original and compressed image sizes
-    diff_size_mb = round((original_image_size_mb - compressed_image_size_mb), 2)
-
-    # Calculating percentage of compression
-    diff_percentage = round((diff_size_mb * 100) / original_image_size_mb, 2)
-
-    return [
-        image_file,
-        original_image_size_mb,
-        compressed_image_size_mb,
-        diff_size_mb,
-        diff_percentage,
-    ]
+    diff = orig - comp
+    pct = (diff * 100 / orig) if orig else 0.0
+    return [filename, round(orig, 2), round(comp, 2), round(diff, 2), round(pct, 2)]
 
 
-app = QApplication(sys.argv)
+# ---------------------------- Worker Thread ---------------------------- #
+
+class CompressorWorker(QThread):
+    progress = pyqtSignal(int)
+    log = pyqtSignal(str)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, input_folder, compression_percent, parent=None):
+        super().__init__(parent)
+        self.input_folder = input_folder
+        self.compression_percent = compression_percent
+        self._is_interrupted = False
+
+    def interrupt(self):
+        self._is_interrupted = True
+
+    def _compress_image(self, src_path, dest_path):
+        ext = os.path.splitext(src_path)[1].lower()
+        img = cv2.imread(src_path)
+        if img is None:
+            raise RuntimeError("cv2.imread returned None")
+
+        if ext in (".jpg", ".jpeg"):
+            cv2.imwrite(dest_path, img, [cv2.IMWRITE_JPEG_QUALITY, self.compression_percent])
+        elif ext == ".png":
+            png_level = max(0, min(9, int((100 - self.compression_percent) / 10)))
+            cv2.imwrite(dest_path, img, [cv2.IMWRITE_PNG_COMPRESSION, png_level])
+        else:
+            cv2.imwrite(dest_path, img)
+
+    def _compress_video(self, src_path, dest_path):
+        cap = cv2.VideoCapture(src_path)
+        if not cap.isOpened():
+            raise RuntimeError("Unable to open video")
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+
+        scale = max(0.1, self.compression_percent / 100.0)
+        new_w = max(1, int(width * scale))
+        new_h = max(1, int(height * scale))
+
+        dest_root, _ = os.path.splitext(dest_path)
+        dest_mp4 = dest_root + ".mp4"
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(dest_mp4, fourcc, fps, (new_w, new_h))
+        if not writer.isOpened():
+            cap.release()
+            raise RuntimeError("Unable to open VideoWriter")
+
+        for f_idx in range(frame_count):
+            if self._is_interrupted:
+                writer.release()
+                cap.release()
+                raise RuntimeError("Interrupted by user")
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if scale != 1.0:
+                frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            writer.write(frame)
+
+        writer.release()
+        cap.release()
+
+        if os.path.exists(dest_mp4):
+            if os.path.abspath(dest_mp4) != os.path.abspath(dest_path):
+                try:
+                    shutil.move(dest_mp4, dest_path)
+                    final_path = dest_path
+                except Exception:
+                    final_path = dest_mp4
+            else:
+                final_path = dest_mp4
+            return final_path
+        else:
+            raise RuntimeError("Video encoding produced no output file")
+
+    def run(self):
+        try:
+            src = self.input_folder
+            parent_path, name = os.path.split(src)
+            dest = os.path.join(parent_path, f"{name}_Compressed")
+            os.makedirs(dest, exist_ok=True)
+
+            wb = openpyxl.Workbook()
+            sheet = wb.active
+            set_column_widths(sheet)
+            merge_and_style_cells(sheet, 3, 2, 4, 7, f"Source Path : {src}", "76933C")
+            merge_and_style_cells(sheet, 6, 2, 7, 7, f"Destination Path : {dest}", "F79646")
+
+            headers = ["#", "File Name", "Original Size", "Compressed Size", "Difference", "Difference %"]
+            header_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+            border = Border(
+                left=Side(style="medium", color="000000"),
+                right=Side(style="medium", color="000000"),
+                top=Side(style="medium", color="000000"),
+                bottom=Side(style="medium", color="000000"),
+            )
+
+            for col_index, h in enumerate(headers, start=2):
+                cell = sheet.cell(row=10, column=col_index)
+                cell.value = h
+                cell.fill = header_fill
+                cell.border = border
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            files = os.listdir(src)
+            total_files = len(files) or 1
+            processed = 0
+            media_counter = 0
+            orig_total = 0.0
+            comp_total = 0.0
+            excel_row = 11
+
+            self.log.emit(f"Found {len(files)} files. Starting compression at {self.compression_percent}%.")
+
+            for idx, fname in enumerate(files, start=1):
+                if self._is_interrupted:
+                    self.log.emit("Compression interrupted by user.")
+                    break
+
+                processed += 1
+                src_path = os.path.join(src, fname)
+                dest_path = os.path.join(dest, fname)
+
+                if os.path.isdir(src_path):
+                    self.log.emit(f"Skipped directory: {fname}")
+                    self.progress.emit(int((processed / total_files) * 100))
+                    continue
+
+                try:
+                    lower = fname.lower()
+                    if lower.endswith(IMAGE_EXTS):
+                        try:
+                            self._compress_image(src_path, dest_path)
+                            self.log.emit(f"Compressed image: {fname}")
+                        except Exception as e:
+                            shutil.copyfile(src_path, dest_path)
+                            self.log.emit(f"Image copy fallback: {fname}. Error: {e}")
+                    elif lower.endswith(VIDEO_EXTS):
+                        try:
+                            final_video_path = self._compress_video(src_path, dest_path)
+                            dest_path = final_video_path
+                            self.log.emit(f"Compressed video: {fname}")
+                        except Exception as e:
+                            try:
+                                shutil.copyfile(src_path, dest_path)
+                                self.log.emit(f"Video copy fallback: {fname}. Error: {e}")
+                            except Exception as ex:
+                                self.log.emit(f"Failed to copy video: {fname}. Error: {ex}")
+                    else:
+                        try:
+                            shutil.copyfile(src_path, dest_path)
+                            self.log.emit(f"Copied non-media: {fname}")
+                        except Exception as e:
+                            self.log.emit(f"Failed to copy {fname}: {e}")
+
+                    stats = get_file_stats(src, dest, os.path.basename(dest_path))
+                    if stats:
+                        orig_total += stats[1]
+                        comp_total += stats[2]
+
+                        row_data = [
+                            media_counter + 1,
+                            stats[0],
+                            f"{stats[1]} MB",
+                            f"{stats[2]} MB",
+                            f"{stats[3]} MB",
+                            f"{stats[4]}%",
+                        ]
+                        for cidx, val in enumerate(row_data, start=2):
+                            cell = sheet.cell(row=excel_row, column=cidx)
+                            cell.value = val
+                            cell.border = border
+                            if cidx != 3:
+                                cell.alignment = Alignment(horizontal="center", vertical="center")
+                        excel_row += 1
+                        media_counter += 1
+
+                except Exception as e:
+                    self.log.emit(f"Unexpected error with file {fname}: {e}")
+
+                self.progress.emit(int((processed / total_files) * 100))
+
+            if media_counter > 0:
+                diff_mb = round(orig_total - comp_total, 2)
+                diff_pct = round((diff_mb * 100) / orig_total, 2) if orig_total else 0
+                footer = ["", "Total", f"{orig_total} MB", f"{comp_total} MB", f"{diff_mb} MB", f"{diff_pct}%"]
+                footer_fill = PatternFill(start_color="92CDDC", end_color="92CDDC", fill_type="solid")
+                for cidx, val in enumerate(footer, start=2):
+                    cell = sheet.cell(row=excel_row + 1, column=cidx)
+                    cell.value = val
+                    cell.fill = footer_fill
+                    cell.border = border
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            excel_path = os.path.join(dest, "compression_details.xlsx")
+            wb.save(excel_path)
+
+            self.progress.emit(100)
+            self.log.emit(f"Compression finished. Excel saved at: {excel_path}")
+            self.finished.emit(excel_path)
+
+        except Exception as e:
+            self.error.emit(f"Worker failed with error: {e}")
 
 
-class Filecompressr(QtWidgets.QWidget):
+# ------------------------------ GUI Class ------------------------------ #
+
+class FileCompressorUI(QtWidgets.QWidget):
+    """Main UI with drag-and-drop folder selection and light theme."""
+
     def __init__(self):
         super().__init__()
-        self.initUI()
+        self.worker = None
+        self._setup_ui()
+        self._apply_light_theme()
+        self.setAcceptDrops(True)
 
-    def initUI(self):
-        self.folderLabel = QtWidgets.QLabel("Folder:")
-        self.folderEdit = QtWidgets.QLineEdit()
-        self.folderButton = QtWidgets.QPushButton("Browse...")
-        self.compressLabel = QtWidgets.QLabel("Compress %")
-        self.compressEdit = QtWidgets.QLineEdit()
-        self.compressButton = QtWidgets.QPushButton("Compress")
+    def _setup_ui(self):
+        self.setWindowTitle("Bulk Media Compress Tool — Images & Videos")
+        self.setWindowIcon(QtGui.QIcon("icon.png"))
+        self.resize(750, 520)
+
+        self.folder_label = QtWidgets.QLabel("Select Folder:")
+        self.folder_edit = QtWidgets.QLineEdit()
+        self.folder_edit.setPlaceholderText("Drag a folder here or click Browse")
+        self.folder_btn = QtWidgets.QPushButton("Browse")
+        self.compress_label = QtWidgets.QLabel("Compression % (10-90):")
+        self.compress_edit = QtWidgets.QLineEdit()
+        self.compress_edit.setPlaceholderText("e.g., 60")
+        self.start_btn = QtWidgets.QPushButton("Start")
+        self.cancel_btn = QtWidgets.QPushButton("Cancel")
+        self.cancel_btn.setEnabled(False)
+
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.log_box = QtWidgets.QTextEdit()
+        self.log_box.setReadOnly(True)
 
         layout = QtWidgets.QGridLayout()
-        layout.addWidget(self.folderLabel, 0, 0)
-        layout.addWidget(self.folderEdit, 0, 1)
-        layout.addWidget(self.folderButton, 0, 2)
-        layout.addWidget(self.compressLabel, 3, 0)
-        layout.addWidget(self.compressEdit, 3, 1)
-        layout.addWidget(self.compressButton, 5, 1)
+        layout.addWidget(self.folder_label, 0, 0)
+        layout.addWidget(self.folder_edit, 0, 1, 1, 4)
+        layout.addWidget(self.folder_btn, 0, 5)
+        layout.addWidget(self.compress_label, 1, 0)
+        layout.addWidget(self.compress_edit, 1, 1)
+        layout.addWidget(self.start_btn, 1, 3)
+        layout.addWidget(self.cancel_btn, 1, 4)
+        layout.addWidget(QtWidgets.QLabel("Progress:"), 2, 0)
+        layout.addWidget(self.progress_bar, 2, 1, 1, 5)
+        layout.addWidget(QtWidgets.QLabel("Logs:"), 3, 0)
+        layout.addWidget(self.log_box, 4, 0, 1, 6)
         self.setLayout(layout)
 
-        self.setWindowTitle("Bulk File Compress Tool")
-        self.setWindowIcon(QtGui.QIcon("icon.png"))
+        self.folder_btn.clicked.connect(self.select_folder)
+        self.start_btn.clicked.connect(self.start_worker)
+        self.cancel_btn.clicked.connect(self.cancel_worker)
 
-        self.folderButton.clicked.connect(self.folderSelection)
-        self.compressButton.clicked.connect(self.compressFiles)
+    def _apply_light_theme(self):
+        self.setStyleSheet("""
+            QWidget { background-color: #f9f9f9; font-family: Arial; font-size: 11pt; }
+            QLineEdit, QTextEdit { background-color: #ffffff; border: 1px solid #cccccc; border-radius: 4px; padding: 4px; }
+            QPushButton { background-color: #e0e0e0; border: 1px solid #b0b0b0; padding: 6px 12px; border-radius: 4px; }
+            QPushButton:hover { background-color: #d0d0d0; }
+            QProgressBar { border: 1px solid #b0b0b0; border-radius: 5px; text-align: center; }
+            QProgressBar::chunk { background-color: #76c7c0; }
+        """)
 
-    def folderSelection(self):
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if os.path.isdir(url.toLocalFile()):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        for url in urls:
+            folder = url.toLocalFile()
+            if os.path.isdir(folder):
+                self.folder_edit.setText(folder)
+                self.append_log(f"Folder selected via drag-and-drop: {folder}")
+                break
+
+    def select_folder(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select Folder")
-        self.folderEdit.setText(folder)
+        if folder:
+            self.folder_edit.setText(folder)
 
-    def compressFiles(self):
-        folder = self.folderEdit.text()
-        compress_percentage = self.compressEdit.text()
-        if compress_percentage != "":
-            compress_percentage = int(compress_percentage)
-            if compress_percentage < 10:
-                QtWidgets.QMessageBox.warning(
-                    self, "compressd", "Compression % can not be less than 10%"
-                )
-            elif compress_percentage > 90:
-                QtWidgets.QMessageBox.warning(
-                    self, "compressd", "Compression % can not be greater than 90%"
-                )
-            else:
-                if folder:
-                    original_total_size = 0
-                    compressed_total_size = 0
-                    compression = compress_percentage
-                    original_folder_path = folder
-                    path_split = os.path.split(original_folder_path)
-                    compressed_folder_path = os.path.join(
-                        path_split[0], path_split[1] + "_Compressed"
-                    )
-                    os.mkdir(compressed_folder_path)
-                    filename = "compression_details.xlsx"
-                    workbook = openpyxl.Workbook()
-                    sheet = workbook.active
-                    setWidth(sheet)
-                    csv_file = os.path.join(compressed_folder_path, filename)
-                    excelMergeCells(
-                        3,
-                        2,
-                        4,
-                        7,
-                        sheet,
-                        "Source Path : " + original_folder_path,
-                        "76933C",
-                    )
-                    excelMergeCells(
-                        6,
-                        2,
-                        7,
-                        7,
-                        sheet,
-                        "Destination Path : " + compressed_folder_path,
-                        "F79646",
-                    )
+    def append_log(self, message):
+        self.log_box.append(message)
+        self.log_box.ensureCursorVisible()
 
-                    header = [
-                        "#",
-                        "Image Name",
-                        "Original Size",
-                        "Compressed Size",
-                        "Difference",
-                        "Difference %",
-                    ]
-                    i = 0
-                    fill = PatternFill(
-                        start_color="FFFF00", end_color="FFFF00", fill_type="solid"
-                    )
-                    alignment = Alignment(horizontal="center", vertical="center")
-                    border = Border(
-                        left=Side(border_style="medium", color="000000"),
-                        right=Side(border_style="medium", color="000000"),
-                        top=Side(border_style="medium", color="000000"),
-                        bottom=Side(border_style="medium", color="000000"),
-                    )
-                    for row in sheet.iter_rows(
-                        min_row=10, max_row=10, min_col=2, max_col=7
-                    ):
-                        for cell in row:
-                            cell.fill = fill
-                            cell.border = border
-                            cell.value = header[i]
-                            cell.alignment = alignment
-                            i += 1
+    def start_worker(self):
+        folder = self.folder_edit.text().strip()
+        pct_text = self.compress_edit.text().strip()
 
-                    dir_list = os.listdir(original_folder_path)
-                    j = 0
-                    for image_file in dir_list:
-                        if not image_file.lower().endswith(
-                            (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".gif")
-                        ):
-                            original_image_path = os.path.join(
-                                original_folder_path, image_file
-                            )
-                            compressed_image_path = os.path.join(
-                                compressed_folder_path, image_file
-                            )
-                            shutil.copyfile(original_image_path, compressed_image_path)
-                            break
-                        j += 1
-                        try:
-                            original_image_path = os.path.join(
-                                original_folder_path, image_file
-                            )
-                            image = cv2.imread(original_image_path)
-                            compressed_image_path = os.path.join(
-                                compressed_folder_path, image_file
-                            )
-                            cv2.imwrite(
-                                compressed_image_path,
-                                image,
-                                [cv2.IMWRITE_JPEG_QUALITY, compression],
-                            )
-                            data = fileSizeCalculate(
-                                original_folder_path, compressed_folder_path, image_file
-                            )
-                            final_data = [
-                                j,
-                                data[0],
-                                str(data[1]) + " MB",
-                                str(data[2]) + " MB",
-                                str(data[3]) + " MB",
-                                data[4],
-                            ]
-                            i = 0
-                            alignment = Alignment(
-                                horizontal="center", vertical="center"
-                            )
-                            for row in sheet.iter_rows(
-                                min_row=10 + j, max_row=10 + j, min_col=2, max_col=7
-                            ):
-                                for cell in row:
-                                    cell.border = border
-                                    cell.value = final_data[i]
-                                    if i != 1:
-                                        cell.alignment = alignment
-                                    i += 1
-                        except Exception as e:
-                            original_image_path = os.path.join(
-                                original_folder_path, image_file
-                            )
-                            compressed_image_path = os.path.join(
-                                compressed_folder_path, image_file
-                            )
-                            shutil.copyfile(original_image_path, compressed_image_path)
-                        original_total_size += data[1]
-                        compressed_total_size += data[2]
-                    compressed_total_size = round(compressed_total_size, 2)
-                    original_total_size = round(original_total_size, 2)
-                    diff_size_mb = round(
-                        (original_total_size - compressed_total_size), 2
-                    )
-                    diff_percentage = round(
-                        (diff_size_mb * 100) / original_total_size, 2
-                    )
-                    fotter = [
-                        "",
-                        "Total",
-                        str(original_total_size) + " MB",
-                        str(compressed_total_size) + " MB",
-                        str(diff_size_mb) + " MB",
-                        diff_percentage,
-                    ]
-                    i = 0
-                    j += 1
-                    fill = PatternFill(
-                        start_color="92CDDC", end_color="92CDDC", fill_type="solid"
-                    )
-                    alignment = Alignment(horizontal="center", vertical="center")
-                    for row in sheet.iter_rows(
-                        min_row=10 + j, max_row=10 + j, min_col=2, max_col=7
-                    ):
-                        for cell in row:
-                            cell.fill = fill
-                            cell.border = border
-                            cell.value = fotter[i]
-                            cell.alignment = alignment
-                            i += 1
-                    workbook.save(csv_file)
+        if not folder or not os.path.exists(folder):
+            QtWidgets.QMessageBox.warning(self, "Warning", "Please select a valid folder.")
+            return
+        if not pct_text.isdigit():
+            QtWidgets.QMessageBox.warning(self, "Warning", "Enter a valid compression percentage (10–90).")
+            return
 
-        # Show a message box to confirm that the files have been compressd
-        QtWidgets.QMessageBox.information(
-            self, "compressd", "Files have been compressd"
-        )
+        pct = int(pct_text)
+        if not (10 <= pct <= 90):
+            QtWidgets.QMessageBox.warning(self, "Warning", "Compression % must be between 10 and 90.")
+            return
 
+        self.start_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.folder_btn.setEnabled(False)
+        self.append_log(f"Starting compression: folder={folder}, quality={pct}%")
+
+        self.worker = CompressorWorker(folder, pct)
+        self.worker.progress.connect(self.on_progress)
+        self.worker.log.connect(self.append_log)
+        self.worker.finished.connect(self.on_finished)
+        self.worker.error.connect(self.on_error)
+        self.worker.start()
+
+    def cancel_worker(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.interrupt()
+            self.append_log("Cancellation requested. Waiting for the worker to stop...")
+            self.cancel_btn.setEnabled(False)
+
+    def on_progress(self, value):
+        self.progress_bar.setValue(value)
+
+    def on_finished(self, excel_path):
+        self.append_log(f"Worker finished. Excel: {excel_path}")
+        QtWidgets.QMessageBox.information(self, "Done", f"Compression completed.\nExcel saved at:\n{excel_path}")
+        # Open Excel automatically
+        try:
+            if sys.platform.startswith('darwin'):
+                subprocess.call(['open', excel_path])
+            elif os.name == 'nt':
+                os.startfile(excel_path)
+            elif os.name == 'posix':
+                subprocess.call(['xdg-open', excel_path])
+        except Exception:
+            pass
+        self._reset_ui()
+
+    def on_error(self, msg):
+        self.append_log(f"ERROR: {msg}")
+        QtWidgets.QMessageBox.critical(self, "Error", msg)
+        self._reset_ui()
+
+    def _reset_ui(self):
+        self.start_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self.folder_btn.setEnabled(True)
+        self.progress_bar.setValue(0)
+
+
+# ------------------------------- Entry Point ------------------------------- #
 
 if __name__ == "__main__":
-    # Create an instance of the Filecompressr widget and show it
-    compressr = Filecompressr()
-    compressr.show()
+    app = QtWidgets.QApplication(sys.argv)
+    window = FileCompressorUI()
+    window.show()
     sys.exit(app.exec_())
